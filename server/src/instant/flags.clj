@@ -485,7 +485,9 @@
   (toggled? :use-get-datalog-queries-for-topics-v2? true))
 
 (defn enable-wal-entity-log? [app-id]
-  (or (toggled? :enable-wal-entity-log-globally)
+  (or (Boolean/parseBoolean
+       (or (System/getenv "INSTANT_WAL_ENTITY_LOG") "false"))
+      (toggled? :enable-wal-entity-log-globally)
       (contains? (flag :enable-wal-entity-log-apps) app-id)
       (contains? (flag :enable-wal-entity-log-apps-map) app-id)))
 
@@ -499,15 +501,25 @@
   []
   (not (toggled? :disable-skip-noop-id-triple-updates false)))
 
+(defn filter-query?
+  []
+  (or (Boolean/parseBoolean
+       (or (System/getenv "INSTANT_FILTER_QUERY") "false"))
+      (toggled? :filter-query)))
+
 (def use-more-vfutures?
-  (case (config/get-env)
-    :dev
-    (fn []
-      (contains? (flag :more-vfutures-instances) @config/hostname))
-    :test
-    (fn [] true)
-    (fn []
-      (contains? (flag :more-vfutures-instances) @config/instance-id))))
+  (let [forced? (Boolean/parseBoolean
+                 (or (System/getenv "INSTANT_MORE_VFUTURES") "false"))]
+    (case (config/get-env)
+      :dev
+      (fn []
+        (or forced?
+            (contains? (flag :more-vfutures-instances) @config/hostname)))
+      :test
+      (fn [] true)
+      (fn []
+        (or forced?
+            (contains? (flag :more-vfutures-instances) @config/instance-id))))))
 
 (defn statement-cancel-wait-ms []
   (flag :statement-cancel-wait-ms 500))

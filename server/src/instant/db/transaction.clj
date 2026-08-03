@@ -571,7 +571,7 @@
                                        :detailed-tx-steps (pr-str tx-step-vecs)}}
         (prevent-system-catalog-updates! app-id opts)
         (when-not (:skip-app-status-write-check? opts)
-          (app-model/assert-write-allowed! app-id))
+          (app-model/acquire-backup-barrier-shared! conn app-id))
         (validate-mode conn app-id tx-step-maps)
         ;; n.b. transaction-model/create! must be the first write to the db
         ;;      or else the invalidator will miss the transaction.

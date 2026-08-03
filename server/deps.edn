@@ -16,7 +16,8 @@
         com.github.ben-manes.caffeine/caffeine {:mvn/version "3.2.2"}
         org.postgresql/postgresql {:mvn/version "42.7.3"}
         ring-cors/ring-cors {:mvn/version "0.1.13"}
-        ring/ring {:mvn/version "1.13.0"}
+        ring/ring {:mvn/version "1.13.0"
+                   :exclusions [ring/ring-jetty-adapter]}
         ring/ring-codec {:mvn/version "1.3.0"}
         ring/ring-json {:mvn/version "0.5.0"}
         com.zaxxer/HikariCP {:mvn/version "6.2.1"}
@@ -31,6 +32,10 @@
         software.amazon.awssdk/s3 {:mvn/version "2.46.2"}
         software.amazon.awssdk/s3-transfer-manager {:mvn/version "2.46.2"}
         software.amazon.awssdk/netty-nio-client {:mvn/version "2.46.2"}
+        io.netty/netty-codec {:mvn/version "4.1.136.Final"}
+        io.netty/netty-codec-http {:mvn/version "4.1.136.Final"}
+        io.netty/netty-codec-http2 {:mvn/version "4.1.136.Final"}
+        io.netty/netty-handler {:mvn/version "4.1.136.Final"}
         software.amazon.awssdk/bedrockruntime {:mvn/version "2.46.2"}
         software.amazon.awssdk/cloudwatch {:mvn/version "2.46.2"}
         software.amazon.awssdk/sqs {:mvn/version "2.46.2"}
@@ -50,6 +55,7 @@
         net.mikera/core.matrix {:mvn/version "0.63.0"}
 
         com.taoensso/nippy {:mvn/version "3.5.0"}
+        io.airlift/aircompressor {:mvn/version "2.0.3"}
 
         nrepl/nrepl {:mvn/version "0.9.0"}
         jarohen/chime {:mvn/version "0.3.3"}
@@ -73,11 +79,11 @@
 
         dev.cel/cel {:mvn/version "0.11.1"}
         com.google.protobuf/protobuf-java-util {:mvn/version "4.33.5"}
-        com.fasterxml.jackson.core/jackson-core {:mvn/version "2.18.3"}
+        com.fasterxml.jackson.core/jackson-core {:mvn/version "2.18.8"}
         com.google.crypto.tink/tink {:mvn/version "1.21.0"}
         com.google.crypto.tink/tink-awskms {:mvn/version "2.0.0"}
         ;; Version required by aws kms library pulled in by tink
-        com.fasterxml.jackson.core/jackson-databind {:mvn/version "2.18.3"}
+        com.fasterxml.jackson.core/jackson-databind {:mvn/version "2.18.8"}
 
         lambdaisland/uri {:mvn/version "1.19.155"}
         lambdaisland/deep-diff2 {:mvn/version "2.12.219"
@@ -91,7 +97,7 @@
         com.stripe/stripe-java {:mvn/version "29.5.0"}
         inflections/inflections {:mvn/version "0.14.1" :exclusions [noencore/noencore]}
         noencore/noencore {:mvn/version "0.3.8"}
-        org.apache.tika/tika-core {:mvn/version "3.2.1"}
+        org.apache.tika/tika-core {:mvn/version "3.2.2"}
 
         datascript/datascript {:git/url "https://github.com/tonsky/datascript.git"
                                :sha "d270292ddaee0a9052e73502247798baae31a77f"

@@ -150,7 +150,7 @@
                     ["SELECT
                         *
                       FROM
-                        pg_create_logical_replication_slot(?, ?, false);"
+                        pg_create_logical_replication_slot(?, ?, false, false, true);"
                      slot-name output-plugin]))
 
 (defn create-slot-with-snapshot!
@@ -235,7 +235,7 @@
   [conn slot-name]
   (sql/select-one ::get-logical-replication-slot
                   conn
-                  ["SELECT slot_name, confirmed_flush_lsn as lsn
+                  ["SELECT slot_name, confirmed_flush_lsn as lsn, failover
                       FROM pg_replication_slots
                      WHERE slot_name = ?"
                    slot-name]))
@@ -259,8 +259,11 @@
 (defn ensure-slot [db-config slot-name]
   (with-open [conn (get-pg-replication-conn db-config)]
     (try
-      (when-not (get-logical-replication-slot conn slot-name)
-        (create-slot-with-snapshot! conn slot-name "wal2json"))
+      (if-let [slot (get-logical-replication-slot conn slot-name)]
+        (when-not (:failover slot)
+          (throw (ex-info "Logical replication slot is not failover-enabled"
+                          {:slot-name slot-name})))
+        (create-logical-replication-slot! conn slot-name "wal2json"))
       (catch PSQLException e
         (when (not= :duplicate-object (:condition (pgerrors/extract-data e)))
           (throw e))))))
@@ -623,7 +626,9 @@
   "Tries to create a new connection and restart the replication stream"
   [get-conn-config slot-type slot-name]
   (try
-    (let [conn (get-pg-replication-conn (get-conn-config))]
+    (let [db-config (get-conn-config)
+          _ (ensure-slot db-config slot-name)
+          conn (get-pg-replication-conn db-config)]
       ;; try is double-nested so that we can dispose of the connection
       ;; if we get an error creating the stream.
       (try
@@ -801,10 +806,19 @@
 
   (let [replication-conn (get-pg-replication-conn (get-conn-config))
         shutdown? (atom false)
-        stream (try (create-replication-stream replication-conn slot-type slot-name lsn)
-                    (catch PSQLException e
-                      (when (not= :object-in-use (:condition (pgerrors/extract-data e)))
-                        (throw e))))]
+        stream (try
+                 (create-replication-stream replication-conn slot-type slot-name lsn)
+                 (catch PSQLException e
+                   (if (= :object-in-use (:condition (pgerrors/extract-data e)))
+                     nil
+                     (do
+                       (try (close-nicely replication-conn)
+                            (catch Exception _close-error nil))
+                       (throw e))))
+                 (catch Exception e
+                   (try (close-nicely replication-conn)
+                        (catch Exception _close-error nil))
+                   (throw e)))]
     (if-not stream
       (do (close-nicely replication-conn)
           nil)
