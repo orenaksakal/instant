@@ -2,6 +2,7 @@
   (:require [tool]
             [clojure.java.io :as io]
             [clojure.java.process :as process]
+            [clojure.string :as string]
             [instant.util.crypt :as crypt-util]
             [instant.config-edn :as config-edn]
             [instant.config :as config]
@@ -15,6 +16,7 @@
             [next.jdbc :as next-jdbc]
             [next.jdbc.connection :refer [jdbc-url]])
   (:import (java.io BufferedReader InputStreamReader)
+           (java.net URI)
            (sun.misc Signal SignalHandler)))
 
 (defn read-input ^String []
@@ -75,17 +77,25 @@
 (def override-config-path
   "resources/config/override.edn")
 
-(defn jdbc-url->postgres-url [url & params]
+(defn jdbc-url->postgres-url [url & [params]]
   (let [{:keys [host port path query]} (uri/parse (subs url (count "jdbc:")))
-        {:keys [user username password]} (uri/query-string->map query)]
-    (uri/uri-str (merge {:scheme "postgresql"
-                         :host host
-                         :port port
-                         :user (or user username)
-                         :password password
-                         :path path}
-                        (when params
-                          {:query (uri/map->query-string (first params))})))))
+        {:keys [user username password] :as query-params}
+        (uri/query-string->map query)
+        database-user (or user username)
+        user-info (cond
+                    (and database-user password) (str database-user ":" password)
+                    database-user database-user
+                    :else nil)
+        remaining-query (merge (dissoc query-params :user :username :password)
+                               params)]
+    (str (URI. "postgresql"
+               user-info
+               host
+               (if port (Integer/parseInt (str port)) -1)
+               path
+               (when (seq remaining-query)
+                 (uri/map->query-string remaining-query))
+               nil))))
 
 (defn generate-override-config
   "Writes a fresh OSS override config. Set OVERRIDE_CONFIG_PATH to write outside
@@ -112,9 +122,13 @@
 
 (defn migrate-database []
   (config/init)
-  (let [database-url (-> (config/get-aurora-config)
-                         (jdbc-url)
-                         (jdbc-url->postgres-url {:sslmode "disable"}))]
+  (let [configured-url (or (some-> (System/getenv "DATABASE_URL")
+                                    string/trim
+                                    not-empty)
+                           (-> (config/get-aurora-config) jdbc-url))
+        database-url (if (string/starts-with? configured-url "jdbc:")
+                       (jdbc-url->postgres-url configured-url)
+                       configured-url)]
     (process/exec "migrate"
                   "-database" database-url
                   "-path" "resources/migrations"
@@ -185,15 +199,22 @@
         :else
         (println "Instant Config is owned by" (:email user))))))
 
-(defn bootstrap-for-oss
-  "Helper to setup everything the server needs for its initial run."
+(defn bootstrap-metadata-for-oss
+  "Creates or repairs self-hosted operator metadata after reviewed migrations."
   [_args]
   (ensure-override-config)
-  (println "Migrating database")
-  (migrate-database)
+  (config/init)
   (tracer/init)
   (try
     (disable-self-hosted-bundled-user-logins!)
     (bootstrap-config-app!)
     (finally
       (tracer/shutdown))))
+
+(defn bootstrap-for-oss
+  "Explicit operator action that migrates and then bootstraps OSS metadata."
+  [_args]
+  (ensure-override-config)
+  (println "Migrating database")
+  (migrate-database)
+  (bootstrap-metadata-for-oss nil))

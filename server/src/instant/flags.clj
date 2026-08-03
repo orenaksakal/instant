@@ -253,23 +253,30 @@
                                 (get result "query-modifiers"))
         dashboard-signups (some-> (get flags :dashboard-signups)
                                   w/keywordize-keys)
+        self-hosted-superuser-email (some-> (config/superuser-email)
+                                             string/lower-case
+                                             string/trim)
         dashboard-signup-mode
-        (let [mode (get dashboard-signups :mode)
-              mode-name (if (keyword? mode) (name mode) mode)]
-          (if (contains? dashboard-signup-modes mode-name)
-            (keyword mode-name)
-            :open))
+        (if self-hosted-superuser-email
+          :restricted
+          (let [mode (get dashboard-signups :mode)
+                mode-name (if (keyword? mode) (name mode) mode)]
+            (if (contains? dashboard-signup-modes mode-name)
+              (keyword mode-name)
+              :open)))
         dashboard-allowed-emails
-        (let [emails (get dashboard-signups :allowedEmails)]
-          (if-not (sequential? emails)
-            #{}
-            (set (keep (fn [email]
-                         (when (string? email)
-                           (some-> email
-                                   string/lower-case
-                                   string/trim
-                                   not-empty)))
-                       emails))))]
+        (if self-hosted-superuser-email
+          #{self-hosted-superuser-email}
+          (let [emails (get dashboard-signups :allowedEmails)]
+            (if-not (sequential? emails)
+              #{}
+              (set (keep (fn [email]
+                           (when (string? email)
+                             (some-> email
+                                     string/lower-case
+                                     string/trim
+                                     not-empty)))
+                         emails)))))]
     {:emails emails
      :dashboard-allowed-emails dashboard-allowed-emails
      :dashboard-signup-mode dashboard-signup-mode
@@ -485,7 +492,9 @@
   (toggled? :use-get-datalog-queries-for-topics-v2? true))
 
 (defn enable-wal-entity-log? [app-id]
-  (or (toggled? :enable-wal-entity-log-globally)
+  (or (Boolean/parseBoolean
+       (or (System/getenv "INSTANT_WAL_ENTITY_LOG") "false"))
+      (toggled? :enable-wal-entity-log-globally)
       (contains? (flag :enable-wal-entity-log-apps) app-id)
       (contains? (flag :enable-wal-entity-log-apps-map) app-id)))
 
@@ -499,15 +508,25 @@
   []
   (not (toggled? :disable-skip-noop-id-triple-updates false)))
 
+(defn filter-query?
+  []
+  (or (Boolean/parseBoolean
+       (or (System/getenv "INSTANT_FILTER_QUERY") "false"))
+      (toggled? :filter-query)))
+
 (def use-more-vfutures?
-  (case (config/get-env)
-    :dev
-    (fn []
-      (contains? (flag :more-vfutures-instances) @config/hostname))
-    :test
-    (fn [] true)
-    (fn []
-      (contains? (flag :more-vfutures-instances) @config/instance-id))))
+  (let [forced? (Boolean/parseBoolean
+                 (or (System/getenv "INSTANT_MORE_VFUTURES") "false"))]
+    (case (config/get-env)
+      :dev
+      (fn []
+        (or forced?
+            (contains? (flag :more-vfutures-instances) @config/hostname)))
+      :test
+      (fn [] true)
+      (fn []
+        (or forced?
+            (contains? (flag :more-vfutures-instances) @config/instance-id))))))
 
 (defn statement-cancel-wait-ms []
   (flag :statement-cancel-wait-ms 500))

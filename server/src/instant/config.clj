@@ -207,16 +207,21 @@
         {:jdbcUrl url}
 
         (string/starts-with? url "postgresql")
-        (let [{:keys [user password host port path]} (uri/parse url)]
-          {:dbtype "postgres"
-           :dbname (if (string/starts-with? path "/")
-                     (subs path 1)
-                     path)
-           :user user
-           :password (normalize/percent-decode password)
-           :host host
-           :port (when port
-                   (Integer/parseInt port))})
+        (let [{:keys [user password host port path query]} (uri/parse url)
+              query-params (uri/query-string->map query)]
+          ;; Preserve connection security and routing parameters such as
+          ;; sslmode=verify-full. Explicit URI authority fields win over any
+          ;; duplicate query parameters.
+          (merge query-params
+                 {:dbtype "postgres"
+                  :dbname (if (string/starts-with? path "/")
+                            (subs path 1)
+                            path)
+                  :user user
+                  :password (normalize/percent-decode password)
+                  :host host
+                  :port (when port
+                          (Integer/parseInt port))}))
 
         :else
         (throw (Exception. "Invalid database connection string. Expected either a JDBC url or a postgres url."))))

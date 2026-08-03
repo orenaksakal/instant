@@ -33,6 +33,67 @@
           '[:eav #{3} _ _]
           '[:eav #{1} #{2} #{3}]))))
 
+(deftest topic-match-cache
+  (let [store (rs/init)
+        app-id (random-uuid)
+        conn (rs/app-conn store app-id)
+        entity-id (random-uuid)
+        attr-id (random-uuid)
+        query-1 [[:ea entity-id]]
+        query-2 [[:ea (random-uuid)]]
+        topics-1 [[:eav #{entity-id} #{attr-id} #{1}]]
+        topics-2 [[:eav #{(random-uuid)} #{attr-id} #{1}]]
+        add-query! (fn [query topics]
+                     (let [report
+                           (rs/transact!
+                            "test/add-datalog-query"
+                            conn
+                            [{:db/id -1
+                              :datalog-query/app-id app-id
+                              :datalog-query/query query
+                              :datalog-query/topics topics}])]
+                       (#'rs/register-topic-match-query! conn query)
+                       (#'rs/register-topic-match-query-topics!
+                        conn query topics)
+                       (get (:tempids report) -1)))
+        query-1-eid (add-query! query-1 topics-1)]
+    (add-query! query-2 topics-2)
+      (is (= [query-1-eid]
+             (#'rs/get-datalog-queries-for-topics-v3
+              conn @conn app-id topics-1)))
+      (is (= 1 (.size ^java.util.Map
+                      (:topic-match-cache (meta conn)))))
+
+      (testing "changed values reuse the widened, correctness-safe key"
+        (is (= [query-1-eid]
+               (#'rs/get-datalog-queries-for-topics-v3
+                conn
+                @conn
+                app-id
+                [[:eav #{entity-id} #{attr-id} #{2}]])))
+        (is (= 1 (.size ^java.util.Map
+                        (:topic-match-cache (meta conn))))))
+
+      (testing "a new matching query invalidates the candidate cache"
+        (let [query-3 [[:ea entity-id :second]]
+              query-3-eid (add-query!
+                           query-3
+                           [[:eav #{entity-id} #{attr-id} #{3}]])]
+          (is (zero? (.size ^java.util.Map
+                            (:topic-match-cache (meta conn)))))
+          (is (= #{query-1-eid query-3-eid}
+                 (set
+                  (#'rs/get-datalog-queries-for-topics-v3
+                   conn @conn app-id topics-1))))
+
+          (testing "removed transient entity ids are never returned"
+            (rs/transact! "test/remove-datalog-query"
+                          conn
+                          [[:db/retractEntity query-1-eid]])
+            (is (= [query-3-eid]
+                   (#'rs/get-datalog-queries-for-topics-v3
+                    conn @conn app-id topics-1))))))))
+
 (deftest swap-datalog-cache!
   (let [store  (rs/init)
         app-id (random-uuid)

@@ -1489,15 +1489,24 @@
   (let [{{app-id :id} :app} (req->app-accepting-superadmin-or-ref-token! :admin :apps/read req)
         {postmark-id :postmark_id instant-verified? :verification_verified}
         (app-email-verification/get-by-app-id-and-email-type-with-template
-         {:app-id app-id :email-type "magic-code"})]
+         {:app-id app-id :email-type "magic-code"})
+        postmark-sender (when postmark-id
+                          (-> (postmark/get-sender! {:id postmark-id})
+                              :body
+                              (select-keys [:ID :EmailAddress :Confirmed
+                                            :DKIMVerified :DKIMHost
+                                            :DKIMPendingHost
+                                            :DKIMPendingTextValue :DKIMTextValue
+                                            :ReturnPathDomain
+                                            :ReturnPathDomainVerified
+                                            :ReturnPathDomainCNAMEValue])))
+        verification-response (when postmark-sender
+                                (assoc postmark-sender
+                                       :Confirmed
+                                       (boolean (or (:Confirmed postmark-sender)
+                                                    (:DKIMVerified postmark-sender)))))]
     (response/ok {:instant {:verified? instant-verified?}
-                  :verification (when postmark-id
-                                  (-> (postmark/get-sender! {:id postmark-id})
-                                      :body
-                                      (select-keys [:ID :EmailAddress :Confirmed
-                                                    :DKIMHost :DKIMPendingHost
-                                                    :DKIMPendingTextValue :DKIMTextValue
-                                                    :ReturnPathDomain :ReturnPathDomainCNAMEValue])))})))
+                  :verification verification-response})))
 
 (defn email-status-get [req]
   (let [{{app-id :id} :app} (req->app-accepting-superadmin-or-ref-token! :admin :apps/read req)

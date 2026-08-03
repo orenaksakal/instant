@@ -1,4 +1,25 @@
-FROM amazoncorretto:26 AS builder
+FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS migrate-builder
+
+ARG MIGRATE_VERSION=4.19.1
+ARG MIGRATE_COMMIT=89e308c340a2c069c3260f268307d38a7db88227
+
+# Build only the file source and PostgreSQL database drivers. The upstream
+# all-drivers release binary includes cloud/gRPC dependencies Instant never
+# invokes; keeping those out materially reduces both attack surface and CVEs.
+RUN apk add --no-cache ca-certificates git && \
+    git clone --depth 1 --branch "v${MIGRATE_VERSION}" \
+      https://github.com/golang-migrate/migrate.git /src/migrate && \
+    test "$(git -C /src/migrate rev-parse HEAD)" = "${MIGRATE_COMMIT}" && \
+    cd /src/migrate && \
+    CGO_ENABLED=0 go build \
+      -trimpath \
+      -ldflags="-s -w -X main.Version=${MIGRATE_VERSION}" \
+      -tags="postgres" \
+      -o /out/migrate \
+      ./cmd/migrate && \
+    /out/migrate -version
+
+FROM amazoncorretto:26@sha256:fe6a58397bd9bf7281cfa88daea479ef558c900487087caa4fa14eaaae897639 AS builder
 
 WORKDIR /app
 
@@ -13,31 +34,21 @@ RUN ./linux-install.sh
 
 COPY deps.edn .
 
-RUN clojure -P
+RUN --mount=type=cache,target=/root/.m2 clojure -P
 
 COPY . .
 
-RUN clojure -X:deps tree
+RUN --mount=type=cache,target=/root/.m2 clojure -X:deps tree
 
-RUN clojure -T:build uber
+RUN --mount=type=cache,target=/root/.m2 clojure -T:build uber
 
-FROM amazoncorretto:26
+FROM amazoncorretto:26-alpine@sha256:2ef1a0df2205eec19fe3cf046d30dc3051feaccba9b0215a64840c53cabbfbec
 
 WORKDIR /app
 
-# Install dependencies and golang-migrate
-RUN yum -y install tar gzip && \
-    ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then \
-      ARCH="amd64"; \
-    elif [ "$ARCH" = "aarch64" ]; then \
-      ARCH="arm64"; \
-    else \
-      echo "Unsupported architecture: $ARCH"; exit 1; \
-    fi && \
-    curl -L "https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-$ARCH.tar.gz" | tar xvz && \
-    mv migrate /usr/local/bin/migrate && \
-    yum clean all
+RUN apk upgrade --no-cache && apk add --no-cache bash curl
+
+COPY --from=migrate-builder --chmod=0755 /out/migrate /usr/local/bin/migrate
 
 COPY --from=builder /app/target/instant-standalone.jar ./target/instant-standalone.jar
 COPY --from=builder /app/resources/migrations ./resources/migrations
@@ -68,13 +79,16 @@ if [ "${1:-}" = "generate-override-config" ]; then
     exit 0
 fi
 
-echo "Bootstrapping self-hosted server..."
-java ${JAVA_FLAGS} \
-    -cp resources:target/instant-standalone.jar \
-    clojure.main \
-    -e "(require 'tasks) (tasks/bootstrap-for-oss nil)"
+if [ "${1:-}" = "migrate-and-bootstrap" ]; then
+    echo "Running explicit self-hosted migration and metadata bootstrap..."
+    java ${JAVA_FLAGS} \
+        -cp resources:target/instant-standalone.jar \
+        clojure.main \
+        -e "(require 'tasks) (tasks/bootstrap-for-oss nil)"
+    exit 0
+fi
 
-echo "Starting server..."
+echo "Starting server without automatic migrations..."
 exec java ${JAVA_FLAGS} \
     -cp resources:target/instant-standalone.jar \
     instant.core

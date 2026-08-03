@@ -5,6 +5,7 @@
    [datascript.core :as ds]
    [instant.cloudwatch :as cloudwatch]
    [instant.config :as config]
+   [instant.db.model.transaction :as tx-model]
    [instant.db.pg-introspect :as pg-introspect]
    [instant.flags :as flags]
    [instant.gauges :as gauges]
@@ -361,6 +362,10 @@
                                                          v
 
                                                          :else isn)))]
+    ;; The WAL reader resolves this promise on the singleton owner. Replicas
+    ;; receive the same record over gRPC and must resolve the promise created
+    ;; when that replica accepted the transaction as well.
+    (tx-model/deliver-isn (:tx-id wal-record) isn)
     (when (and old-previous
                (not= old-previous previous-isn))
       ;; TODO: We should fetch the missing wal-records from the history table
@@ -648,6 +653,12 @@
 
                               wal-worker (ua/fut-bg
                                           (try
+                                            ;; A database promotion can remove a logical slot while
+                                            ;; this process remains alive. Re-create the failover
+                                            ;; slot before every ownership attempt instead of only
+                                            ;; once during process startup.
+                                            (wal/ensure-slot (get-conn-config)
+                                                             (:slot-name wal-opts))
                                             (wal/start-singleton-worker wal-opts)
                                             (finally
                                               (deliver wal-started-promise :recur)

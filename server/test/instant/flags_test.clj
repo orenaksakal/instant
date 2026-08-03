@@ -1,6 +1,7 @@
 (ns instant.flags-test
   (:require
    [clojure.test :refer [deftest is testing]]
+   [instant.config :as config]
    [instant.flags :as flags]))
 
 (deftest dashboard-signup-settings
@@ -8,6 +9,18 @@
     (let [result (flags/transform-query-result {})]
       (is (= :open (:dashboard-signup-mode result)))
       (is (= #{} (:dashboard-allowed-emails result)))))
+
+  (testing "the self-hosted operator email forces a single-email allowlist"
+    (with-redefs [config/superuser-email
+                  (constantly "Owner@Example.com")]
+      (let [result
+            (flags/transform-query-result
+             {"flags" [{"setting" "dashboard-signups"
+                        "value" {"mode" "open"
+                                 "allowedEmails" ["other@example.com"]}}]})]
+        (is (= :restricted (:dashboard-signup-mode result)))
+        (is (= #{"owner@example.com"}
+               (:dashboard-allowed-emails result))))))
 
   (testing "settings and allowed emails are normalized"
     (let [result

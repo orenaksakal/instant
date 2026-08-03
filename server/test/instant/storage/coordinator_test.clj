@@ -2,9 +2,26 @@
   (:require [clojure.test :as test :refer [deftest is testing]]
             [instant.storage.coordinator :as coordinator]
             [instant.fixtures :refer [with-empty-app]]
+            [instant.model.app :as app-model]
             [instant.model.app-user :as app-user-model]
             [instant.model.rule :as rule-model]
+            [instant.storage.s3 :as storage-s3]
             [instant.util.test :as test-util :refer [perm-err? make-attrs insert-entities suid]]))
+
+(deftest storage-upload-checks-app-status-before-object-write
+  (let [s3-called? (atom false)]
+    (with-redefs [app-model/assert-write-allowed!
+                  (fn [_] (throw (ex-info "read-only" {:type ::read-only})))
+                  storage-s3/upload-file-to-s3
+                  (fn [& _] (reset! s3-called? true))]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"read-only"
+           (coordinator/upload-file! {:app-id (random-uuid)
+                                      :path "blocked.txt"
+                                      :skip-perms-check? true}
+                                     nil)))
+      (is (false? @s3-called?)))))
 
 (deftest storage-permission-can-traverse-refs
   (with-empty-app
