@@ -48,8 +48,25 @@
                                                              :escpaing? false}))))))
 
 (defn health-get [_req]
-  (let [wal-errors (sql/select-one (aurora/conn-pool :read) ["select v from config where k = 'wal-errors'"])]
-    (if (some-> wal-errors :v seq)
+  ;; WAL health is process-local. A broken replica must be drained without
+  ;; making every healthy replica return 500 from the shared database flag.
+  (let [wal-error (sql/select-one
+                   (aurora/conn-pool :read)
+                   ["select coalesce(jsonb_exists(v::jsonb, ?::text), false) as unhealthy
+                       from config
+                      where k = 'wal-errors'"
+                    (str @config/process-id)])
+        slot-name (str "invalidator_" @config/process-id)
+        local-slot (sql/select-one
+                    (aurora/conn-pool :read)
+                    ["select active, failover, invalidation_reason
+                        from pg_replication_slots
+                       where slot_name = ?"
+                     slot-name])]
+    (if (or (:unhealthy wal-error)
+            (not (:active local-slot))
+            (not (:failover local-slot))
+            (:invalidation_reason local-slot))
       (response/internal-server-error {:wal :error})
       (response/ok {:wal :ok}))))
 

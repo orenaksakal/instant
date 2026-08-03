@@ -56,6 +56,9 @@
 ;; Setup
 
 (def handle-receive-timeout-ms 5000)
+(def transact-isn-wait-ms
+  (or (config/env-integer "INSTANT_TX_ISN_WAIT_MS")
+      2500))
 
 (def threads-num-receive-workers (* 20 (delay/cpu-count)))
 (def vfutures-num-receive-workers (* 100 (delay/cpu-count)))
@@ -566,7 +569,7 @@
         max-wait-ms (-> (- handle-receive-timeout-ms (- (System/currentTimeMillis)
                                                         start))
                         (- 1000) ;; Add a one second buffer
-                        (min 2500) ;; Don't wait more then 2.5 seconds
+                        (min transact-isn-wait-ms)
                         (max 0))
         isn-wait-start (System/currentTimeMillis)
         isn (deref isn-promise max-wait-ms nil)

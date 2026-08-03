@@ -255,6 +255,9 @@
                  :tx-queue (ConcurrentLinkedQueue.)
                  :cache-executor cache-executor
                  :datalog-query-cache (create-datalog-query-cache cache-executor)
+                 :topic-match-cache (ConcurrentHashMap.)
+                 :topic-match-known-queries (ConcurrentHashMap.)
+                 :topic-match-cache-lock (ReentrantLock. false)
                  :app-id app-id)
     conn))
 
@@ -284,6 +287,33 @@
 
 (defn conn->datalog-query-cache [conn]
   (-> conn meta :datalog-query-cache))
+
+(def ^:private topic-match-pending-hash ::pending)
+
+(defn- register-topic-match-query!
+  [conn datalog-query]
+  (let [{:keys [^Map topic-match-cache
+                ^Map topic-match-known-queries
+                topic-match-cache-lock]} (meta conn)]
+    (lang/with-reentrant-lock topic-match-cache-lock
+      (when-not (Map/.containsKey topic-match-known-queries datalog-query)
+        (Map/.put topic-match-known-queries
+                  datalog-query
+                  topic-match-pending-hash)
+        (Map/.clear topic-match-cache)))))
+
+(defn- register-topic-match-query-topics!
+  [conn datalog-query topics]
+  (let [{:keys [^Map topic-match-cache
+                ^Map topic-match-known-queries
+                topic-match-cache-lock]} (meta conn)
+        topics-hash (hash topics)]
+    (lang/with-reentrant-lock topic-match-cache-lock
+      (let [previous (Map/.put topic-match-known-queries
+                               datalog-query
+                               topics-hash)]
+        (when (not= previous topics-hash)
+          (Map/.clear topic-match-cache))))))
 
 (defn translate-datascript-exceptions [exinfo]
   (let [{:keys [error entity-id]} (ex-data exinfo)]
@@ -904,29 +934,32 @@
 
 (defn record-datalog-query-start! [store ctx datalog-query coarse-topics]
   (let [{:keys [app-id session-id instaql-query v]} ctx
-        conn (app-conn store app-id)]
-    (transact! "store/record-datalog-query-start!"
-               conn
-               [[:db.fn/call
-                 (fn [db]
-                   (let [lookup-ref [:datalog-query/app-id+query [app-id datalog-query]]
-                         existing-datalog-query (d/entity db lookup-ref)
-                         datalog-query-eid (or (:db/id existing-datalog-query) -1)]
-                     (concat
-                      (if existing-datalog-query
-                        (when-not (:datalog-query/topics existing-datalog-query)
-                          [{:db/id datalog-query-eid
-                            :datalog-query/topics coarse-topics}])
-                        [{:db/id datalog-query-eid
-                          :datalog-query/app-id app-id
-                          :datalog-query/query  datalog-query
-                          :datalog-query/topics coarse-topics}])
-                      (when-some [query-eid (d/entid db [:instaql-query/session-id+query [session-id instaql-query]])]
-                        [{:subscription/app-id app-id
-                          :subscription/session-id session-id
-                          :subscription/v v
-                          :subscription/instaql-query query-eid
-                          :subscription/datalog-query datalog-query-eid}]))))]])))
+        conn (app-conn store app-id)
+        report
+        (transact! "store/record-datalog-query-start!"
+                   conn
+                   [[:db.fn/call
+                     (fn [db]
+                       (let [lookup-ref [:datalog-query/app-id+query [app-id datalog-query]]
+                             existing-datalog-query (d/entity db lookup-ref)
+                             datalog-query-eid (or (:db/id existing-datalog-query) -1)]
+                         (concat
+                          (if existing-datalog-query
+                            (when-not (:datalog-query/topics existing-datalog-query)
+                              [{:db/id datalog-query-eid
+                                :datalog-query/topics coarse-topics}])
+                            [{:db/id datalog-query-eid
+                              :datalog-query/app-id app-id
+                              :datalog-query/query  datalog-query
+                              :datalog-query/topics coarse-topics}])
+                          (when-some [query-eid (d/entid db [:instaql-query/session-id+query [session-id instaql-query]])]
+                            [{:subscription/app-id app-id
+                              :subscription/session-id session-id
+                              :subscription/v v
+                              :subscription/instaql-query query-eid
+                              :subscription/datalog-query datalog-query-eid}]))))]])]
+    (register-topic-match-query! conn datalog-query)
+    report))
 
 (defn record-datalog-query-finish! [store
                                     ctx
@@ -935,14 +968,17 @@
 
   (let [{:keys [app-id]} ctx
         conn (app-conn store app-id)
-        lookup-ref [:datalog-query/app-id+query [app-id datalog-query]]]
-    (transact!
-     "store/record-datalog-query-finish!"
-     conn
-     [[:db.fn/call
-       (fn [db]
-         (when-some [existing (d/entity db lookup-ref)]
-           [[:db/add (:db/id existing) :datalog-query/topics topics]]))]])))
+        lookup-ref [:datalog-query/app-id+query [app-id datalog-query]]
+        report
+        (transact!
+         "store/record-datalog-query-finish!"
+         conn
+         [[:db.fn/call
+           (fn [db]
+             (when-some [existing (d/entity db lookup-ref)]
+               [[:db/add (:db/id existing) :datalog-query/topics topics]]))]])]
+    (register-topic-match-query-topics! conn datalog-query topics)
+    report))
 
 ;; ------------
 ;; invalidation
@@ -1244,13 +1280,60 @@
      (topic-trie-match? iv-topic-trie dq-topic))
    dq-topics))
 
-(defn- get-datalog-queries-for-topics-v3 [db app-id iv-topics]
+(defn- scan-datalog-query-identities-for-topics
+  [db app-id iv-topics known-queries]
   (let [iv-topic-trie (topics->topic-trie iv-topics)]
-    (vec (for [datom (d/datoms db :avet :datalog-query/app-id app-id)
-               :let [dq-topics (:datalog-query/topics (d/entity db (:e datom)))]
-               :when dq-topics
-               :when (matching-topic-intersection-trie? iv-topic-trie dq-topics)]
-           (:e datom)))))
+    (vec
+     (keep
+      (fn [datom]
+        (let [ent (d/entity db (:e datom))
+              datalog-query (:datalog-query/query ent)
+              dq-topics (:datalog-query/topics ent)]
+          (when (and datalog-query dq-topics)
+            (Map/.putIfAbsent known-queries datalog-query (hash dq-topics))
+            (when (matching-topic-intersection-trie? iv-topic-trie dq-topics)
+              datalog-query))))
+      (d/datoms db :avet :datalog-query/app-id app-id)))))
+
+(defn- generalized-topic-match-cache-key [iv-topics]
+  ;; A wildcard value creates a correctness-safe superset for repeated writes:
+  ;; entity and attribute constraints stay selective, while changed values,
+  ;; ranges and comparators reuse the same candidate list.
+  (set (map (fn [topic] (assoc (vec topic) 3 '_)) iv-topics)))
+
+(defn- resolve-datalog-query-identities [db app-id datalog-queries]
+  (vec
+   (keep (fn [datalog-query]
+           (d/entid db
+                    [:datalog-query/app-id+query [app-id datalog-query]]))
+         datalog-queries)))
+
+(defn- get-datalog-queries-for-topics-v3 [conn db app-id iv-topics]
+  (let [{:keys [^Map topic-match-cache
+                ^Map topic-match-known-queries
+                topic-match-cache-lock]} (meta conn)
+        max-entries (or (config/env-integer "INSTANT_TOPIC_MATCH_CACHE_MAX")
+                        10000)]
+    (if-not (pos? max-entries)
+      (let [queries (scan-datalog-query-identities-for-topics
+                     db app-id iv-topics topic-match-known-queries)]
+        (resolve-datalog-query-identities db app-id queries))
+      (lang/with-reentrant-lock topic-match-cache-lock
+        (let [cache-key (generalized-topic-match-cache-key iv-topics)
+              cached (Map/.get topic-match-cache cache-key)
+              queries (or cached
+                          (let [matched
+                                (scan-datalog-query-identities-for-topics
+                                 db
+                                 app-id
+                                 cache-key
+                                 topic-match-known-queries)]
+                            (when (>= (Map/.size topic-match-cache)
+                                      max-entries)
+                              (Map/.clear topic-match-cache))
+                            (Map/.put topic-match-cache cache-key matched)
+                            matched))]
+          (resolve-datalog-query-identities db app-id queries))))))
 
 ;; ----------
 ;; Topic Index based on attribute values
@@ -1418,7 +1501,7 @@
       (tracer/record-exception-span! t {:name "instaql-topic-should-remove-query?-error"}))))
 
 (defn filter-queries [app-id db iv-topics wal-record query-ids]
-  (if-not (flags/toggled? :filter-query)
+  (if-not (flags/filter-query?)
     query-ids
     (let [iql-topic-remove
           (remove (fn [eid]
@@ -1451,7 +1534,8 @@
                              wal-record
                              (cond
                                (flags/use-get-datalog-queries-for-topics-v3?)
-                               (get-datalog-queries-for-topics-v3 db app-id topics)
+                               (get-datalog-queries-for-topics-v3
+                                conn db app-id topics)
 
                                (flags/use-get-datalog-queries-for-topics-v2?)
                                (get-datalog-queries-for-topics-v2 db app-id topics)

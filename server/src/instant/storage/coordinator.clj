@@ -1,5 +1,6 @@
 (ns instant.storage.coordinator
   (:require [instant.flags :as flags]
+            [instant.model.app :as app-model]
             [instant.storage.s3 :as instant-s3]
             [instant.model.app-file :as app-file-model]
             [instant.model.rule :as rule-model]
@@ -43,6 +44,9 @@
   "Uploads a file to S3 and tracks it in Instant. Returns a file id"
   [{:keys [app-id path current-user mode skip-perms-check?] :as ctx}
    file]
+  ;; Reject before uploading an unreferenced object. The database transaction
+  ;; also checks app status, but it runs only after the S3 write.
+  (app-model/assert-write-allowed! app-id)
   (storage-beta/assert-storage-enabled! app-id)
   (when (not skip-perms-check?)
     (assert-storage-permission! "create" {:app-id app-id
@@ -81,6 +85,7 @@
 (defn delete-files!
   "Deletes multiple files from both Instant and S3."
   [{:keys [app-id paths current-user skip-perms-check?]}]
+  (app-model/assert-write-allowed! app-id)
   (storage-beta/assert-storage-enabled! app-id)
   (when (not skip-perms-check?)
     (doseq [path paths]
@@ -96,6 +101,7 @@
 (defn delete-file!
   "Deletes a file from both Instant and S3."
   [{:keys [app-id path current-user skip-perms-check?]}]
+  (app-model/assert-write-allowed! app-id)
   (when (not skip-perms-check?)
     (assert-storage-permission! "delete" {:app-id app-id
                                           :path path
@@ -110,6 +116,7 @@
 (defn create-upload-url!
   "Creates a limited time url for uploading a file to Instant"
   [{:keys [app-id path skip-perms-check? current-user]}]
+  (app-model/assert-write-allowed! app-id)
   (storage-beta/assert-storage-enabled! app-id)
   (when (not skip-perms-check?)
     (assert-storage-permission! "create" {:app-id app-id

@@ -16,7 +16,7 @@
    (software.amazon.awssdk.auth.credentials DefaultCredentialsProvider)
    (software.amazon.awssdk.http.nio.netty NettyNioAsyncHttpClient)
    (software.amazon.awssdk.regions Region)
-   (software.amazon.awssdk.services.s3 S3AsyncClient S3Client S3ClientBuilder S3CrtAsyncClientBuilder)
+   (software.amazon.awssdk.services.s3 S3AsyncClient S3Client S3ClientBuilder S3Configuration S3CrtAsyncClientBuilder)
    (software.amazon.awssdk.transfer.s3 S3TransferManager)))
 
 (set! *warn-on-reflection* true)
@@ -24,12 +24,21 @@
 ;; Configuration
 ;; ----------------------
 
+(defn- endpoint-service-configuration ^S3Configuration []
+  ;; Cloudflare R2 rejects the Java SDK v2's default chunked PutObject
+  ;; encoding with SignatureDoesNotMatch. Keep path-style addressing and
+  ;; disable chunked encoding for every explicitly configured S3 endpoint.
+  (-> (S3Configuration/builder)
+      (.pathStyleAccessEnabled Boolean/TRUE)
+      (.chunkedEncodingEnabled Boolean/FALSE)
+      (.build)))
+
 (defn- configure-s3-endpoint-client ^S3ClientBuilder [^S3ClientBuilder builder]
   (if-let [endpoint (config/s3-endpoint)]
     (doto builder
       (.endpointOverride (URI/create endpoint))
       (.region (Region/of (config/s3-region)))
-      (.forcePathStyle Boolean/TRUE))
+      (.serviceConfiguration (endpoint-service-configuration)))
     (let [credentials-provider (-> (DefaultCredentialsProvider/builder)
                                    ;; Keeps credentials fresh in the background
                                    (.asyncCredentialUpdateEnabled true)

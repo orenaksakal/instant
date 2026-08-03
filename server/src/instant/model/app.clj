@@ -336,6 +336,33 @@
 
 (def statuses #{:active :read-only :disabled})
 
+;; Data writes take a shared transaction-level lock. A protected backup holds
+;; the matching exclusive session lock while the app is read-only. The try-lock
+;; rejects new writes immediately while allowing ordinary writes to proceed in
+;; parallel when no backup is active.
+(def backup-barrier-lock-seed 624197641723845531)
+
+(defn acquire-backup-barrier-shared! [conn app-id]
+  (let [{:keys [acquired status]}
+        (sql/select-one
+         ::acquire-backup-barrier-shared!
+         conn
+         ["select
+              pg_try_advisory_xact_lock_shared(
+                hashtextextended(?::uuid::text, ?::bigint)
+              ) as acquired,
+              (select status from apps where id = ?::uuid) as status"
+          app-id backup-barrier-lock-seed app-id])]
+    ;; Reading status in the same primary-database round trip is authoritative
+    ;; across every HA process, including immediately after a runner crash.
+    (when-not acquired
+      (ex/throw-app-read-only!))
+    (case status
+      "active" nil
+      "read-only" (ex/throw-app-read-only!)
+      "disabled" (ex/throw-app-disabled!)
+      (ex/throw-app-disabled!))))
+
 (defn coerce-status [x]
   (when (or (string? x) (keyword? x))
     (statuses (keyword x))))
@@ -349,12 +376,16 @@
       :active))
 
 (defn assert-write-allowed!
-  "Authoritative write check, called from the base transaction layer."
+  "Authoritative primary-database write check for non-transactional storage."
   [app-id]
-  (case (get-status app-id)
-    :active nil
-    :read-only (ex/throw-app-read-only!)
-    :disabled (ex/throw-app-disabled!)))
+  (case (:status (sql/select-one
+                  ::assert-write-allowed!
+                  (aurora/conn-pool :write)
+                  ["select status from apps where id = ?::uuid" app-id]))
+    "active" nil
+    "read-only" (ex/throw-app-read-only!)
+    "disabled" (ex/throw-app-disabled!)
+    (ex/throw-app-disabled!)))
 
 (defn assert-read-allowed!
   "Rejects data reads while the app is disabled."
