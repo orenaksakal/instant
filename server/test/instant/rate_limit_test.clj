@@ -3,8 +3,18 @@
    [clojure.test :as test :refer [deftest is testing]]
    [instant.rate-limit :as rate-limit])
   (:import
+   (com.hazelcast.config Config)
    (java.time Duration)
    (java.util UUID)))
+
+(deftest persistent-bucket-map-is-configured-before-member-start
+  (let [config (rate-limit/configure-hazelcast! (Config.))
+        map-config (.getMapConfig config "bucket4j-2")
+        map-store-config (.getMapStoreConfig map-config)]
+    (is (.isEnabled map-store-config))
+    (is (some? (.getImplementation map-store-config)))
+    (is (= 10 (.getWriteDelaySeconds map-store-config)))
+    (is (= 1000 (.getWriteBatchSize map-store-config)))))
 
 ;; ---
 ;; parse-duration

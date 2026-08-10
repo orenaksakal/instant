@@ -11,7 +11,7 @@
    [instant.util.uuid :as uuid-util]
    [taoensso.nippy :as nippy])
   (:import
-   (com.hazelcast.config EvictionConfig EvictionPolicy MapStoreConfig MapStoreConfig$InitialLoadMode MaxSizePolicy)
+   (com.hazelcast.config Config EvictionConfig EvictionPolicy MapStoreConfig MapStoreConfig$InitialLoadMode MaxSizePolicy)
    (com.hazelcast.core HazelcastInstance)
    (com.hazelcast.map MapStore)
    (io.github.bucket4j Bandwidth Bucket BucketConfiguration ConsumptionProbe EstimationProbe)
@@ -116,14 +116,17 @@
                     (build)))
       (build)))
 
-(defn initialize
-  "Sets up bucket4j to use hazelcast.
-   Returns a map with a `get-bucket` function. For each unique key,
-   get-bucket will return a bucket4j bucket that can be used to rate-limit
-   by calling .tryConsume on it."
-  [^HazelcastInstance hz]
-  (let [map-name "bucket4j-2"
-        eviction-config (.. (EvictionConfig.)
+(def ^:private bucket-map-name "bucket4j-2")
+
+(defn configure-hazelcast!
+  "Installs the persistent bucket map config before a member joins the cluster.
+
+   Hazelcast can start partition migration as part of the join. Adding the map
+   store after `getOrCreateHazelcastInstance` leaves a window where the joining
+   member uses EmptyMapDataStore while an existing member uses WriteBehindStore,
+   which makes mixed-member rolling deploys fail partition replication."
+  [^Config hz-config]
+  (let [eviction-config (.. (EvictionConfig.)
                             (setEvictionPolicy EvictionPolicy/LRU)
                             (setMaxSizePolicy MaxSizePolicy/PER_NODE)
                             (setSize 500000))
@@ -139,12 +142,20 @@
                            (.setWriteCoalescing true)
                            (.setInitialLoadMode MapStoreConfig$InitialLoadMode/LAZY))
 
-        map-config (.getMapConfig (.getConfig hz) map-name)
-        _ (doto map-config
-            (.setEvictionConfig eviction-config)
-            (.setMaxIdleSeconds (* 60 60)) ;; one hour
-            (.setMapStoreConfig map-store-config))
-        bucket-map (.getMap hz map-name)
+        map-config (.getMapConfig hz-config bucket-map-name)]
+    (doto map-config
+      (.setEvictionConfig eviction-config)
+      (.setMaxIdleSeconds (* 60 60)) ;; one hour
+      (.setMapStoreConfig map-store-config))
+    hz-config))
+
+(defn initialize
+  "Sets up bucket4j to use hazelcast.
+   Returns a map with a `get-bucket` function. For each unique key,
+   get-bucket will return a bucket4j bucket that can be used to rate-limit
+   by calling .tryConsume on it."
+  [^HazelcastInstance hz]
+  (let [bucket-map (.getMap hz bucket-map-name)
         manager (.. (Bucket4jHazelcast/entryProcessorBasedBuilder bucket-map)
                     (build))
         capacity (flags/magic-code-rate-limit-per-hour)

@@ -236,6 +236,11 @@
     (.setGlobalSerializerConfig serialization-config
                                 hazelcast/global-serializer-config)
 
+    ;; This must be present before the member joins. Hazelcast may migrate map
+    ;; partitions during `getOrCreateHazelcastInstance`, before any post-start
+    ;; dynamic map configuration can run.
+    (rate-limit/configure-hazelcast! config)
+
     (let [hz                 (Hazelcast/getOrCreateHazelcastInstance config)
           local-member       (.getLocalMember (.getCluster hz))
           hz-rooms-map       (.getMap hz "rooms-v2")
