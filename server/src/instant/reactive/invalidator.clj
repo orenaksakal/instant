@@ -121,7 +121,8 @@
 
         some-changes (or (seq idents)
                          (seq triples)
-                         (seq attrs))
+                         (seq attrs)
+                         (seq transactions))
         transactions-change (first transactions)
         app-id (extract-app-id transactions-change)]
 
