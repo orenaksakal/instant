@@ -77,15 +77,18 @@
 
 (defn jdbc-url->postgres-url [url & params]
   (let [{:keys [host port path query]} (uri/parse (subs url (count "jdbc:")))
-        {:keys [user username password]} (uri/query-string->map query)]
+        query-params (uri/query-string->map query)
+        {:keys [user username password]} query-params
+        postgres-query (merge (dissoc query-params :user :username :password)
+                              (first params))]
     (uri/uri-str (merge {:scheme "postgresql"
                          :host host
                          :port port
                          :user (or user username)
                          :password password
                          :path path}
-                        (when params
-                          {:query (uri/map->query-string (first params))})))))
+                        (when (seq postgres-query)
+                          {:query (uri/map->query-string postgres-query)})))))
 
 (defn generate-override-config
   "Writes a fresh OSS override config. Set OVERRIDE_CONFIG_PATH to write outside
@@ -114,7 +117,7 @@
   (config/init)
   (let [database-url (-> (config/get-aurora-config)
                          (jdbc-url)
-                         (jdbc-url->postgres-url {:sslmode "disable"}))]
+                         (jdbc-url->postgres-url))]
     (process/exec "migrate"
                   "-database" database-url
                   "-path" "resources/migrations"
