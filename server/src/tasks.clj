@@ -79,7 +79,12 @@
   (let [{:keys [host port path query]} (uri/parse (subs url (count "jdbc:")))
         query-params (uri/query-string->map query)
         {:keys [user username password]} query-params
-        postgres-query (merge (dissoc query-params :user :username :password)
+        postgres-query (merge (cond-> (dissoc query-params :user :username :password)
+                                (:ApplicationName query-params)
+                                (assoc :application_name (:ApplicationName query-params))
+
+                                (:ApplicationName query-params)
+                                (dissoc :ApplicationName))
                               (first params))]
     (uri/uri-str (merge {:scheme "postgresql"
                          :host host
