@@ -25,6 +25,28 @@ FROM amazoncorretto:26
 
 WORKDIR /app
 
+# Keep migrations available for the explicit one-shot operator path, but never
+# invoke them from normal container startup. Verify the official release asset
+# before installing it.
+RUN yum -y install tar gzip && \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+      ARCH="amd64"; \
+      CHECKSUM="26c53c9162c9c4aaa84c47cd12455d4a9ac725befbe82850a5937b5ec1e7b8e6"; \
+    elif [ "$ARCH" = "aarch64" ]; then \
+      ARCH="arm64"; \
+      CHECKSUM="9c95441cc430ffdac89276d14de5e2f18bfafca00796c2895490d62e3776d104"; \
+    else \
+      echo "Unsupported architecture: $ARCH"; exit 1; \
+    fi && \
+    curl -fL -o migrate.tar.gz "https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-$ARCH.tar.gz" && \
+    echo "$CHECKSUM  migrate.tar.gz" | sha256sum -c && \
+    tar -xzf migrate.tar.gz && \
+    install -m 0755 migrate /usr/local/bin/migrate && \
+    rm -f migrate migrate.tar.gz && \
+    migrate -version && \
+    yum clean all
+
 COPY --from=builder /app/target/instant-standalone.jar ./target/instant-standalone.jar
 COPY --from=builder /app/resources/migrations ./resources/migrations
 RUN mkdir -p /app/resources/config
@@ -54,11 +76,14 @@ if [ "${1:-}" = "generate-override-config" ]; then
     exit 0
 fi
 
-echo "Bootstrapping self-hosted server..."
-java ${JAVA_FLAGS} \
-    -cp resources:target/instant-standalone.jar \
-    clojure.main \
-    -e "(require 'tasks) (tasks/bootstrap-for-oss nil)"
+if [ "${1:-}" = "migrate-and-bootstrap" ]; then
+    echo "Running explicit self-hosted migration and bootstrap..."
+    java ${JAVA_FLAGS} \
+        -cp resources:target/instant-standalone.jar \
+        clojure.main \
+        -e "(require 'tasks) (tasks/bootstrap-for-oss nil)"
+    exit 0
+fi
 
 echo "Starting server..."
 exec java ${JAVA_FLAGS} \
